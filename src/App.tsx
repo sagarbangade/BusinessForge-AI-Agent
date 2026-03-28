@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap } from 're
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { gsap } from 'gsap';
-import { Search, MapPin, Download, Loader2, Globe, ShieldCheck, BarChart3, Target, Zap, Filter, ChevronUp, ChevronDown, Merge, SearchCode, Database, ArrowRight, CheckCircle2, AlertTriangle, X, Phone, Mail } from 'lucide-react';
+import { Search, MapPin, Download, Loader2, Globe, ShieldCheck, BarChart3, Target, Zap, Filter, ChevronUp, ChevronDown, Merge, SearchCode, Database, ArrowRight, CheckCircle2, AlertTriangle, X, Phone, Mail, Settings } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 
 // Fix Leaflet default icon issue
@@ -22,7 +22,7 @@ const cyberIcon = L.divIcon({
   iconAnchor: [8, 8]
 });
 
-type AgentRole = 'MapCoordinator' | 'BusinessDiscovery' | 'InternetSearch' | 'MergeDeduplicate' | 'WebIntelligence' | 'DataVerification' | 'LeadScoring';
+type AgentRole = 'MapCoordinator' | 'BusinessDiscovery' | 'InternetSearch' | 'MergeDeduplicate' | 'WebIntelligence' | 'ContactHunter' | 'DataVerification' | 'LeadScoring';
 
 interface ChatMessage {
   id: string;
@@ -58,11 +58,16 @@ const AGENT_CONFIG: Record<AgentRole, { icon: React.ElementType, color: string, 
   InternetSearch: { icon: SearchCode, color: 'text-[#ff9900]', name: 'Internet Search Agent' },
   MergeDeduplicate: { icon: Merge, color: 'text-[#00ccff]', name: 'Merge & Dedupe Agent' },
   WebIntelligence: { icon: Globe, color: 'text-[#00ff66]', name: 'Web Intel Agent' },
+  ContactHunter: { icon: Target, color: 'text-[#ff00ff]', name: 'Contact Hunter Agent' },
   DataVerification: { icon: ShieldCheck, color: 'text-[#b026ff]', name: 'Verification Agent' },
   LeadScoring: { icon: BarChart3, color: 'text-[#ffb300]', name: 'Scoring Agent' },
 };
 
-const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
+const OVERPASS_APIS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter'
+];
 const NOMINATIM_REVERSE = 'https://nominatim.openstreetmap.org/reverse';
 const NOMINATIM_SEARCH = 'https://nominatim.openstreetmap.org/search';
 const CORS_PROXY = 'https://api.allorigins.win/get?url=';
@@ -93,6 +98,11 @@ export default function App() {
   const [selectedLocation, setSelectedLocation] = useState<[number, number] | null>(null);
   const [selectedLead, setSelectedLead] = useState<BusinessLead | null>(null);
   
+  // Settings State
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [googlePlacesKey, setGooglePlacesKey] = useState(localStorage.getItem('googlePlacesKey') || '');
+  const [searchRadius, setSearchRadius] = useState<number>(parseInt(localStorage.getItem('searchRadius') || '2000'));
+
   // Table State
   const [filterText, setFilterText] = useState('');
   const [sortConfig, setSortConfig] = useState<{ key: keyof BusinessLead, direction: 'asc' | 'desc' }>({ key: 'techNeedScore', direction: 'desc' });
@@ -107,6 +117,12 @@ export default function App() {
       chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages]);
+
+  const saveSettings = () => {
+    localStorage.setItem('googlePlacesKey', googlePlacesKey);
+    localStorage.setItem('searchRadius', searchRadius.toString());
+    setIsSettingsOpen(false);
+  };
 
   const addMessage = (role: AgentRole, content: string, status: 'thinking' | 'done' | 'error', details?: string) => {
     const id = Math.random().toString(36).substring(7);
@@ -144,47 +160,86 @@ export default function App() {
     }
   };
 
-  const searchDDG = async (query: string) => {
+  const searchGemini = async (city: string, lat: number, lng: number) => {
     try {
-      const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-      const proxyUrl = `${CORS_PROXY}${encodeURIComponent(url)}`;
-      const res = await fetch(proxyUrl);
-      const data = await res.json();
-      if (!data.contents) return [];
+      if (!process.env.GEMINI_API_KEY) {
+        throw new Error("GEMINI_API_KEY is not configured.");
+      }
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Find 15 real, specific local businesses (shops, restaurants, clinics, services) in ${city} near coordinates ${lat}, ${lng} within a ${searchRadius / 1000}km radius. 
+        Return ONLY a valid JSON array of objects. No markdown formatting, no backticks.
+        Format: [{"name": "Business Name", "address": "Full Address", "website": "https://...", "category": "Restaurant/Clinic/etc", "phone": "+1...", "email": "contact@..."}]`,
+        config: {
+          tools: [{ googleSearch: {} }],
+          responseMimeType: "application/json",
+        },
+      });
 
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(data.contents, 'text/html');
-      const results = Array.from(doc.querySelectorAll('.result')).map(el => {
-        const titleEl = el.querySelector('.result__title a');
-        const snippetEl = el.querySelector('.result__snippet');
-        const urlEl = el.querySelector('.result__url');
-
-        let website = urlEl?.getAttribute('href') || titleEl?.getAttribute('href') || '';
-        if (website.includes('duckduckgo.com/l/?uddg=')) {
-          const match = website.match(/uddg=([^&]+)/);
-          if (match) {
-            website = decodeURIComponent(match[1]);
-          }
-        } else if (website.startsWith('//')) {
-          website = 'https:' + website;
-        }
-
-        return {
-          id: Math.random().toString(36).substring(7),
-          name: titleEl?.textContent?.trim() || 'Unknown',
-          category: 'Search Result',
-          address: snippetEl?.textContent?.trim() || 'Unknown Address',
-          lat: 0,
-          lng: 0,
-          phone: '',
-          website: website,
-          source: 'DuckDuckGo Search'
-        };
-      }).filter(r => r.name !== 'Unknown');
-
-      return results;
+      const text = response.text.trim();
+      const data = JSON.parse(text);
+      
+      return data.map((b: any) => ({
+        id: Math.random().toString(36).substring(7),
+        name: b.name || 'Unknown',
+        category: b.category || 'Search Result',
+        address: b.address || 'Unknown Address',
+        lat: lat,
+        lng: lng,
+        phone: b.phone || '',
+        website: b.website || '',
+        email: b.email || '',
+        source: 'Google Search via Gemini'
+      }));
     } catch (e) {
-      console.error("DDG Search failed", e);
+      console.error("Gemini Search failed", e);
+      return [];
+    }
+  };
+
+  const searchGooglePlaces = async (lat: number, lng: number, radius: number = 2000) => {
+    if (!googlePlacesKey) return [];
+    try {
+      // Using Text Search (New) API
+      const response = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': googlePlacesKey,
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.primaryType,places.websiteUri,places.nationalPhoneNumber,places.location'
+        },
+        body: JSON.stringify({
+          includedTypes: ["restaurant", "store", "health", "cafe", "veterinary_care"],
+          maxResultCount: 20,
+          locationRestriction: {
+            circle: {
+              center: { latitude: lat, longitude: lng },
+              radius: radius
+            }
+          }
+        })
+      });
+
+      if (!response.ok) throw new Error("Places API failed");
+      const data = await response.json();
+      
+      if (!data.places) return [];
+
+      return data.places.map((place: any) => ({
+        id: place.id,
+        name: place.displayName?.text || 'Unknown',
+        category: place.primaryType?.replace(/_/g, ' ') || 'Local Business',
+        address: place.formattedAddress || 'Unknown Address',
+        lat: place.location?.latitude || lat,
+        lng: place.location?.longitude || lng,
+        phone: place.nationalPhoneNumber || '',
+        website: place.websiteUri || '',
+        source: 'Google Places API'
+      }));
+    } catch (e) {
+      console.error("Google Places failed", e);
       return [];
     }
   };
@@ -202,74 +257,96 @@ export default function App() {
       const msg1 = addMessage('MapCoordinator', 'Converting coordinates to location data...', 'thinking');
       const locationData = await fetch(`${NOMINATIM_REVERSE}?format=json&lat=${lat}&lon=${lng}`).then(res => res.json());
       const city = locationData.address?.city || locationData.address?.town || locationData.address?.village || locationData.address?.suburb || 'Unknown Location';
-      updateMessageStatus(msg1, `Target acquired: ${city} (${lat.toFixed(4)}, ${lng.toFixed(4)})`, 'done', `Radius set to 4km for optimal performance.`);
+      updateMessageStatus(msg1, `Target acquired: ${city} (${lat.toFixed(4)}, ${lng.toFixed(4)})`, 'done', `Radius set to ${searchRadius / 1000}km for optimal performance.`);
 
-      // 2. Business Discovery (OSM)
-      const msg2 = addMessage('BusinessDiscovery', `Scanning Overpass API for businesses within 2km...`, 'thinking');
+      // 2. Business Discovery (OSM / Google Places)
+      const msg2 = addMessage('BusinessDiscovery', `Scanning for businesses within ${searchRadius / 1000}km...`, 'thinking');
       let osmBusinesses: any[] = [];
-      try {
-        const overpassQuery = `
-          [out:json][timeout:25];
-          (
-            node["shop"](around:2000,${lat},${lng});
-            way["shop"](around:2000,${lat},${lng});
-            node["amenity"~"cafe|restaurant|clinic|dentist|veterinary"](around:2000,${lat},${lng});
-            way["amenity"~"cafe|restaurant|clinic|dentist|veterinary"](around:2000,${lat},${lng});
-          );
-          out center 200;
-        `;
-        
-        const overpassRes = await fetch(OVERPASS_API, { 
-          method: 'POST', 
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: `data=${encodeURIComponent(overpassQuery)}` 
-        });
-        
-        if (!overpassRes.ok) {
-          const errText = await overpassRes.text();
-          throw new Error(`Overpass API error (${overpassRes.status}): ${errText.substring(0, 100)}`);
-        }
-        
-        const overpassData = await overpassRes.json();
-
-        osmBusinesses = overpassData.elements.map((el: any) => ({
-          id: el.id.toString(),
-          name: el.tags?.name || 'Unknown',
-          category: el.tags?.shop || el.tags?.amenity || 'Unknown',
-          lat: el.lat || el.center?.lat,
-          lng: el.lon || el.center?.lon,
-          phone: el.tags?.phone || el.tags?.['contact:phone'] || '',
-          website: el.tags?.website || el.tags?.['contact:website'] || '',
-          address: [el.tags?.['addr:housenumber'], el.tags?.['addr:street']].filter(Boolean).join(' ') || 'Unknown Address',
-          source: `https://www.openstreetmap.org/node/${el.id}`
-        })).filter((b: any) => b.name !== 'Unknown').slice(0, 100); // Get up to 100 from OSM
-
-        updateMessageStatus(msg2, `Extracted ${osmBusinesses.length} records from OpenStreetMap.`, 'done', `Categories: Shops, Cafes, Clinics, Services.`);
-      } catch (osmErr: any) {
-        console.warn("OSM Discovery failed, continuing with web search:", osmErr);
-        updateMessageStatus(msg2, `OSM API overloaded or timed out. Skipping to web search.`, 'error', osmErr.message);
-      }
-
-      // 3. Internet Search Agent (DDG)
-      const msg3 = addMessage('InternetSearch', `Performing deep web searches for local businesses in ${city}...`, 'thinking');
-      const searchQueries = [
-        `local businesses in ${city}`,
-        `services and shops in ${city}`
-      ];
       
-      let ddgBusinesses: any[] = [];
-      for (const q of searchQueries) {
-        const results = await searchDDG(q);
-        ddgBusinesses = [...ddgBusinesses, ...results];
+      if (googlePlacesKey) {
+        osmBusinesses = await searchGooglePlaces(lat, lng, searchRadius);
+        updateMessageStatus(msg2, `Extracted ${osmBusinesses.length} records from Google Places API.`, 'done', `Categories: Shops, Cafes, Clinics, Services.`);
+      } else {
+        // Overpass Rotation Logic
+        let overpassSuccess = false;
+        for (const apiEndpoint of OVERPASS_APIS) {
+          try {
+            const overpassQuery = `
+              [out:json][timeout:15];
+              (
+                node["shop"](around:${searchRadius},${lat},${lng});
+                way["shop"](around:${searchRadius},${lat},${lng});
+                node["amenity"~"cafe|restaurant|clinic|dentist|veterinary"](around:${searchRadius},${lat},${lng});
+                way["amenity"~"cafe|restaurant|clinic|dentist|veterinary"](around:${searchRadius},${lat},${lng});
+              );
+              out center 150;
+            `;
+            
+            const overpassRes = await fetch(apiEndpoint, { 
+              method: 'POST', 
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: `data=${encodeURIComponent(overpassQuery)}` 
+            });
+            
+            if (!overpassRes.ok) throw new Error(`Overpass API error (${overpassRes.status})`);
+            
+            const overpassData = await overpassRes.json();
+            osmBusinesses = overpassData.elements.map((el: any) => ({
+              id: el.id.toString(),
+              name: el.tags?.name || 'Unknown',
+              category: el.tags?.shop || el.tags?.amenity || 'Unknown',
+              lat: el.lat || el.center?.lat,
+              lng: el.lon || el.center?.lon,
+              phone: el.tags?.phone || el.tags?.['contact:phone'] || '',
+              website: el.tags?.website || el.tags?.['contact:website'] || '',
+              address: [el.tags?.['addr:housenumber'], el.tags?.['addr:street']].filter(Boolean).join(' ') || 'Unknown Address',
+              source: `https://www.openstreetmap.org/node/${el.id}`
+            })).filter((b: any) => b.name !== 'Unknown').slice(0, 100);
+            
+            overpassSuccess = true;
+            updateMessageStatus(msg2, `Extracted ${osmBusinesses.length} records from OpenStreetMap.`, 'done', `Categories: Shops, Cafes, Clinics, Services.`);
+            break; // Success, exit loop
+          } catch (e) {
+            console.warn(`Overpass endpoint ${apiEndpoint} failed, trying next...`);
+          }
+        }
+
+        // Fallback to Nominatim POI search if all Overpass servers fail
+        if (!overpassSuccess) {
+          try {
+            const nomRes = await fetch(`${NOMINATIM_SEARCH}?format=json&q=businesses+in+${encodeURIComponent(city)}&limit=50`);
+            const nomData = await nomRes.json();
+            osmBusinesses = nomData.map((el: any) => ({
+              id: el.place_id.toString(),
+              name: el.name || el.display_name.split(',')[0] || 'Unknown',
+              category: el.type || 'Local Business',
+              lat: parseFloat(el.lat),
+              lng: parseFloat(el.lon),
+              phone: '',
+              website: '',
+              address: el.display_name || 'Unknown Address',
+              source: `Nominatim Search`
+            })).filter((b: any) => b.name !== 'Unknown');
+            updateMessageStatus(msg2, `Overpass failed. Fallback: Extracted ${osmBusinesses.length} records from Nominatim.`, 'done', `Basic POI search executed.`);
+          } catch (e) {
+            updateMessageStatus(msg2, `All OSM Discovery methods failed. Skipping to web search.`, 'error', 'Servers overloaded.');
+          }
+        }
       }
-      updateMessageStatus(msg3, `Scraped ${ddgBusinesses.length} results from DuckDuckGo HTML search.`, 'done', `Queries executed: ${searchQueries.join(', ')}`);
+
+      // 3. Internet Search Agent (Gemini Grounding)
+      const msg3 = addMessage('InternetSearch', `Performing deep web searches for local businesses in ${city}...`, 'thinking');
+      
+      const geminiBusinesses = await searchGemini(city, lat, lng);
+      
+      updateMessageStatus(msg3, `Scraped ${geminiBusinesses.length} results from Google Search via Gemini.`, 'done', `Queries executed: local businesses in ${city}`);
 
       // 4. Merge & Deduplicate
       const msg4 = addMessage('MergeDeduplicate', 'Merging datasets and removing duplicates...', 'thinking');
       const combined = [...osmBusinesses];
       let duplicatesFound = 0;
 
-      ddgBusinesses.forEach(ddg => {
+      geminiBusinesses.forEach(ddg => {
         const isDup = combined.some(existing => {
           const nameMatch = existing.name.toLowerCase().includes(ddg.name.toLowerCase()) || ddg.name.toLowerCase().includes(existing.name.toLowerCase());
           const webMatch = existing.website && ddg.website && (existing.website.includes(ddg.website) || ddg.website.includes(existing.website));
@@ -288,6 +365,8 @@ export default function App() {
             existing.sources = existing.sources || [existing.source];
             if (!existing.sources.includes(ddg.source)) existing.sources.push(ddg.source);
             if (!existing.website && ddg.website) existing.website = ddg.website;
+            if (!existing.phone && ddg.phone) existing.phone = ddg.phone;
+            if (!existing.email && ddg.email) existing.email = ddg.email;
           }
         }
       });
@@ -341,6 +420,13 @@ export default function App() {
                 const mailtoLinks = Array.from(doc.querySelectorAll('a[href^="mailto:"]')).map(a => a.getAttribute('href')?.replace('mailto:', '').split('?')[0]);
                 webData.emails = [...new Set(mailtoLinks)].filter(Boolean) as string[];
 
+                // Phones
+                const telLinks = Array.from(doc.querySelectorAll('a[href^="tel:"]')).map(a => a.getAttribute('href')?.replace('tel:', '').split('?')[0]);
+                const textContent = doc.body?.textContent || '';
+                const phoneMatches = textContent.match(/(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g);
+                const phones = [...new Set([...telLinks, ...(phoneMatches || [])])].filter(Boolean) as string[];
+                if (phones.length > 0 && !biz.phone) biz.phone = phones[0];
+
                 // Socials
                 const socialDomains = ['facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com'];
                 const socialLinks = Array.from(doc.querySelectorAll('a')).map(a => a.href).filter(href => socialDomains.some(d => href.includes(d)));
@@ -365,13 +451,53 @@ export default function App() {
       const noWebCount = enrichedBusinesses.filter(b => !b.webData.hasWebsite).length;
       updateMessageStatus(msg5, `Scraping complete.`, 'done', `Found ${noWebCount} without websites, ${brokenCount} with broken sites. Extracted emails & socials.`);
 
+      // 5.5 Contact Hunter Agent (Deep Search)
+      const msgHunter = addMessage('ContactHunter', `Deploying deep search for missing phone numbers and emails...`, 'thinking');
+      const needsContact = enrichedBusinesses.filter(b => !b.phone && b.webData.emails.length === 0 && !b.email).slice(0, 15); // Limit to 15 to avoid massive prompts
+
+      if (needsContact.length > 0) {
+        try {
+          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+          const prompt = `Find the phone number and email address for the following local businesses. Use Google Search to find their public contact info.
+          Businesses:
+          ${needsContact.map(b => `- ${b.name} at ${b.address}`).join('\n')}
+
+          Return ONLY a JSON array: [{"name": "Business Name", "phone": "phone number or empty", "email": "email or empty"}]`;
+
+          const response = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: prompt,
+            config: {
+              tools: [{ googleSearch: {} }],
+              responseMimeType: "application/json",
+            },
+          });
+
+          const contactData = JSON.parse(response.text.trim());
+
+          // Merge back
+          contactData.forEach((c: any) => {
+            const target = enrichedBusinesses.find(b => b.name === c.name);
+            if (target) {
+              if (c.phone && !target.phone) target.phone = c.phone;
+              if (c.email && target.webData.emails.length === 0) target.webData.emails.push(c.email);
+            }
+          });
+          updateMessageStatus(msgHunter, `Contact hunt complete.`, 'done', `Found additional contact info for ${contactData.filter((c:any) => c.phone || c.email).length} businesses.`);
+        } catch (e) {
+          updateMessageStatus(msgHunter, `Contact hunt encountered an error.`, 'error', 'Skipping deep contact search.');
+        }
+      } else {
+        updateMessageStatus(msgHunter, `No deep search needed.`, 'done', `All top leads already have contact info.`);
+      }
+
       // 6. Data Verification
       const msg6 = addMessage('DataVerification', 'Verifying data integrity and assigning confidence...', 'thinking');
       const verifiedBusinesses = enrichedBusinesses.map((biz: any) => {
         let confidence = 50;
         if (biz.name !== 'Unknown') confidence += 10;
         if (biz.address !== 'Unknown Address') confidence += 10;
-        if (biz.phone || biz.webData.emails.length > 0) confidence += 15;
+        if (biz.phone || biz.webData.emails.length > 0 || biz.email) confidence += 15;
         if (biz.webData.isReachable) confidence += 15;
         if (biz.sources.length > 1) confidence += 10; // Found in multiple places
         
@@ -407,7 +533,7 @@ export default function App() {
           name: b.name, 
           hasWebsite: b.webData.hasWebsite, 
           isBroken: b.webData.isBroken, 
-          hasContact: b.webData.hasContactInfo,
+          hasContact: b.webData.hasContactInfo || !!b.phone || !!b.email,
           hasSEO: b.webData.hasSEO,
           hasSocial: b.webData.socialLinks.length > 0
         })))}
@@ -452,7 +578,7 @@ export default function App() {
           lng: biz.lng,
           phone: biz.phone,
           website: biz.website,
-          email: biz.webData.emails[0] || '',
+          email: biz.webData.emails[0] || biz.email || '',
           socialLinks: biz.webData.socialLinks,
           hasSEO: biz.webData.hasSEO,
           isBroken: biz.webData.isBroken,
@@ -460,7 +586,7 @@ export default function App() {
           confidence: biz.confidence,
           sources: biz.sources,
           notes: aiData.notes,
-          hasContact: !!(biz.phone || biz.webData.emails[0])
+          hasContact: !!(biz.phone || biz.webData.emails[0] || biz.email)
         };
       });
 
@@ -572,6 +698,13 @@ export default function App() {
         </form>
 
         <div className="flex items-center gap-4">
+          <button 
+            onClick={() => setIsSettingsOpen(true)}
+            className="flex items-center justify-center w-8 h-8 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all text-gray-400 hover:text-white"
+            title="Settings"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
           <button 
             onClick={exportCSV}
             disabled={leads.length === 0}
@@ -934,6 +1067,79 @@ export default function App() {
                 </ul>
               </div>
 
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-[600] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setIsSettingsOpen(false)}>
+          <div 
+            className="w-full max-w-md bg-[#0a0a0f] border border-white/10 rounded-xl shadow-2xl overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/5">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <Settings className="w-5 h-5 text-[#00f3ff]" />
+                Data Source Settings
+              </h2>
+              <button onClick={() => setIsSettingsOpen(false)} className="p-1 hover:bg-white/10 rounded-full transition-colors">
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Search Radius: {searchRadius / 1000}km</label>
+                <p className="text-xs text-gray-500 mb-3">
+                  Larger areas return more leads but take longer to process. We cap results to ensure the AI can analyze every website without timing out.
+                </p>
+                <input 
+                  type="range" 
+                  min="1000" 
+                  max="20000" 
+                  step="1000"
+                  value={searchRadius}
+                  onChange={(e) => setSearchRadius(parseInt(e.target.value))}
+                  className="w-full accent-[#00f3ff]"
+                />
+                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                  <span>1km</span>
+                  <span>10km</span>
+                  <span>20km</span>
+                </div>
+              </div>
+
+              <div className="border-t border-white/10 pt-4">
+                <label className="block text-sm font-medium text-gray-300 mb-1">Google Places API Key (Optional)</label>
+                <p className="text-xs text-gray-500 mb-3">
+                  Provide a Google Places API key to use premium, highly accurate business data instead of free OpenStreetMap data. 
+                  This drastically improves results in dense cities.
+                </p>
+                <input 
+                  type="password" 
+                  value={googlePlacesKey}
+                  onChange={(e) => setGooglePlacesKey(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="w-full bg-black/50 border border-white/10 rounded-lg py-2 px-3 text-sm focus:outline-none focus:border-[#00f3ff]/50 focus:ring-1 focus:ring-[#00f3ff]/50 transition-all text-white placeholder-gray-600"
+                />
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-white/10 bg-black/20 flex justify-end gap-3">
+              <button 
+                onClick={() => setIsSettingsOpen(false)}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={saveSettings}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-[#00f3ff]/10 text-[#00f3ff] border border-[#00f3ff]/30 hover:bg-[#00f3ff]/20 transition-colors"
+              >
+                Save Settings
+              </button>
             </div>
           </div>
         </div>
