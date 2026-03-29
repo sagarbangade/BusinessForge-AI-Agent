@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap } from 're
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { gsap } from 'gsap';
-import { Search, MapPin, Download, Loader2, Globe, ShieldCheck, BarChart3, Target, Zap, Filter, ChevronUp, ChevronDown, Merge, SearchCode, Database, ArrowRight, CheckCircle2, AlertTriangle, X, Phone, Mail, Settings } from 'lucide-react';
+import { Search, MapPin, Download, Loader2, Globe, ShieldCheck, BarChart3, Target, Zap, Filter, ChevronUp, ChevronDown, Merge, SearchCode, Database, ArrowRight, CheckCircle2, AlertTriangle, X, Phone, Mail, Settings, Briefcase, BrainCircuit } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 
 // Fix Leaflet default icon issue
@@ -22,7 +22,7 @@ const cyberIcon = L.divIcon({
   iconAnchor: [8, 8]
 });
 
-type AgentRole = 'MapCoordinator' | 'BusinessDiscovery' | 'InternetSearch' | 'MergeDeduplicate' | 'WebIntelligence' | 'ContactHunter' | 'DataVerification' | 'LeadScoring';
+type AgentRole = 'MapCoordinator' | 'NicheRefiner' | 'BusinessDiscovery' | 'InternetSearch' | 'MergeDeduplicate' | 'WebIntelligence' | 'ContactHunter' | 'DataVerification' | 'LeadScoring';
 
 interface ChatMessage {
   id: string;
@@ -54,6 +54,7 @@ interface BusinessLead {
 
 const AGENT_CONFIG: Record<AgentRole, { icon: React.ElementType, color: string, name: string }> = {
   MapCoordinator: { icon: MapPin, color: 'text-[#00f3ff]', name: 'Map Coordinator' },
+  NicheRefiner: { icon: BrainCircuit, color: 'text-[#ff3366]', name: 'Niche Refiner Agent' },
   BusinessDiscovery: { icon: Database, color: 'text-[#ff003c]', name: 'OSM Discovery Agent' },
   InternetSearch: { icon: SearchCode, color: 'text-[#ff9900]', name: 'Internet Search Agent' },
   MergeDeduplicate: { icon: Merge, color: 'text-[#00ccff]', name: 'Merge & Dedupe Agent' },
@@ -94,6 +95,7 @@ export default function App() {
   const [leads, setLeads] = useState<BusinessLead[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [targetNiche, setTargetNiche] = useState('');
   const [mapCenter, setMapCenter] = useState<[number, number]>([40.7128, -74.0060]);
   const [selectedLocation, setSelectedLocation] = useState<[number, number] | null>(null);
   const [selectedLead, setSelectedLead] = useState<BusinessLead | null>(null);
@@ -101,6 +103,7 @@ export default function App() {
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [googlePlacesKey, setGooglePlacesKey] = useState(localStorage.getItem('googlePlacesKey') || '');
+  const [geminiKey, setGeminiKey] = useState(localStorage.getItem('geminiKey') || '');
   const [searchRadius, setSearchRadius] = useState<number>(parseInt(localStorage.getItem('searchRadius') || '2000'));
 
   // Table State
@@ -121,6 +124,7 @@ export default function App() {
   const saveSettings = () => {
     localStorage.setItem('googlePlacesKey', googlePlacesKey);
     localStorage.setItem('searchRadius', searchRadius.toString());
+    localStorage.setItem('geminiKey', geminiKey);
     setIsSettingsOpen(false);
   };
 
@@ -160,16 +164,17 @@ export default function App() {
     }
   };
 
-  const searchGemini = async (city: string, lat: number, lng: number) => {
+  const searchGemini = async (city: string, lat: number, lng: number, radius: number, query: string) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
+      const effectiveGeminiKey = geminiKey || process.env.GEMINI_API_KEY;
+      if (!effectiveGeminiKey) {
         throw new Error("GEMINI_API_KEY is not configured.");
       }
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: effectiveGeminiKey });
       
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Find 15 real, specific local businesses (shops, restaurants, clinics, services) in ${city} near coordinates ${lat}, ${lng} within a ${searchRadius / 1000}km radius. 
+        contents: `Find 15 real, specific local businesses matching this description: "${query}" in ${city} near coordinates ${lat}, ${lng} within a ${radius / 1000}km radius. 
         Return ONLY a valid JSON array of objects. No markdown formatting, no backticks.
         Format: [{"name": "Business Name", "address": "Full Address", "website": "https://...", "category": "Restaurant/Clinic/etc", "phone": "+1...", "email": "contact@..."}]`,
         config: {
@@ -199,11 +204,11 @@ export default function App() {
     }
   };
 
-  const searchGooglePlaces = async (lat: number, lng: number, radius: number = 2000) => {
+  const searchGooglePlaces = async (lat: number, lng: number, radius: number = 2000, query: string = "local businesses") => {
     if (!googlePlacesKey) return [];
     try {
-      // Using Text Search (New) API
-      const response = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+      // Using Text Search (New) API for better niche targeting
+      const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -211,9 +216,9 @@ export default function App() {
           'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.primaryType,places.websiteUri,places.nationalPhoneNumber,places.location'
         },
         body: JSON.stringify({
-          includedTypes: ["restaurant", "store", "health", "cafe", "veterinary_care"],
+          textQuery: `${query} near ${lat},${lng}`,
           maxResultCount: 20,
-          locationRestriction: {
+          locationBias: {
             circle: {
               center: { latitude: lat, longitude: lng },
               radius: radius
@@ -253,31 +258,94 @@ export default function App() {
     setIsRunning(true);
 
     try {
+      const effectiveGeminiKey = geminiKey || process.env.GEMINI_API_KEY;
+      if (!effectiveGeminiKey) {
+        addMessage('MapCoordinator', 'Gemini API Key is missing. Please add it in Settings.', 'error');
+        setIsRunning(false);
+        setIsSettingsOpen(true);
+        return;
+      }
+
       // 1. Map Coordinator
       const msg1 = addMessage('MapCoordinator', 'Converting coordinates to location data...', 'thinking');
       const locationData = await fetch(`${NOMINATIM_REVERSE}?format=json&lat=${lat}&lon=${lng}`).then(res => res.json());
       const city = locationData.address?.city || locationData.address?.town || locationData.address?.village || locationData.address?.suburb || 'Unknown Location';
       updateMessageStatus(msg1, `Target acquired: ${city} (${lat.toFixed(4)}, ${lng.toFixed(4)})`, 'done', `Radius set to ${searchRadius / 1000}km for optimal performance.`);
 
+      // 1.5 Niche Refinement
+      let refinedNiche: any = {
+        osmTags: [
+          { key: "shop", regex: ".*" },
+          { key: "amenity", regex: "cafe|restaurant|clinic|dentist|veterinary" }
+        ],
+        searchQuery: "shops, restaurants, clinics, services"
+      };
+
+      if (targetNiche) {
+        const msgNiche = addMessage('NicheRefiner', `Refining target niche: "${targetNiche}"...`, 'thinking');
+        try {
+          const nicheAi = new GoogleGenAI({ apiKey: effectiveGeminiKey });
+          const prompt = `
+            The user wants to find local businesses in this specific niche: "${targetNiche}".
+            Return a JSON object with search parameters to find these businesses.
+            Format EXACTLY like this:
+            {
+              "osmTags": [
+                {"key": "amenity", "regex": "restaurant|cafe|fast_food"},
+                {"key": "shop", "regex": "bakery|deli"}
+              ],
+              "searchQuery": "natural language description of the businesses"
+            }
+            Rules:
+            - osmTags: Provide an array of objects with 'key' (e.g., amenity, shop, office, craft, healthcare, leisure) and 'regex' (pipe-separated values). Use ".*" for regex if you want to match any value for that key.
+            - searchQuery: A short phrase describing the businesses for a Google Search (e.g., "plumbing contractors and services").
+          `;
+          const nicheResponse = await nicheAi.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: prompt,
+            config: { responseMimeType: "application/json" }
+          });
+          refinedNiche = JSON.parse(nicheResponse.text.trim());
+          updateMessageStatus(msgNiche, `Niche refined.`, 'done', `Targeting: ${refinedNiche.searchQuery}`);
+        } catch (e) {
+          updateMessageStatus(msgNiche, `Failed to refine niche, using broad search.`, 'error', 'LLM parsing failed.');
+        }
+      }
+
       // 2. Business Discovery (OSM / Google Places)
       const msg2 = addMessage('BusinessDiscovery', `Scanning for businesses within ${searchRadius / 1000}km...`, 'thinking');
       let osmBusinesses: any[] = [];
       
       if (googlePlacesKey) {
-        osmBusinesses = await searchGooglePlaces(lat, lng, searchRadius);
-        updateMessageStatus(msg2, `Extracted ${osmBusinesses.length} records from Google Places API.`, 'done', `Categories: Shops, Cafes, Clinics, Services.`);
+        osmBusinesses = await searchGooglePlaces(lat, lng, searchRadius, refinedNiche.searchQuery);
+        updateMessageStatus(msg2, `Extracted ${osmBusinesses.length} records from Google Places API.`, 'done', `Categories: ${refinedNiche.searchQuery}`);
       } else {
         // Overpass Rotation Logic
+        let overpassFilters = '';
+        if (refinedNiche.osmTags && refinedNiche.osmTags.length > 0) {
+          refinedNiche.osmTags.forEach((tag: any) => {
+            if (tag.regex && tag.regex !== ".*") {
+               overpassFilters += `node["${tag.key}"~"${tag.regex}"](around:${searchRadius},${lat},${lng});\nway["${tag.key}"~"${tag.regex}"](around:${searchRadius},${lat},${lng});\n`;
+            } else {
+               overpassFilters += `node["${tag.key}"](around:${searchRadius},${lat},${lng});\nway["${tag.key}"](around:${searchRadius},${lat},${lng});\n`;
+            }
+          });
+        } else {
+          overpassFilters = `
+            node["shop"](around:${searchRadius},${lat},${lng});
+            way["shop"](around:${searchRadius},${lat},${lng});
+            node["amenity"~"cafe|restaurant|clinic|dentist|veterinary"](around:${searchRadius},${lat},${lng});
+            way["amenity"~"cafe|restaurant|clinic|dentist|veterinary"](around:${searchRadius},${lat},${lng});
+          `;
+        }
+
         let overpassSuccess = false;
         for (const apiEndpoint of OVERPASS_APIS) {
           try {
             const overpassQuery = `
               [out:json][timeout:15];
               (
-                node["shop"](around:${searchRadius},${lat},${lng});
-                way["shop"](around:${searchRadius},${lat},${lng});
-                node["amenity"~"cafe|restaurant|clinic|dentist|veterinary"](around:${searchRadius},${lat},${lng});
-                way["amenity"~"cafe|restaurant|clinic|dentist|veterinary"](around:${searchRadius},${lat},${lng});
+                ${overpassFilters}
               );
               out center 150;
             `;
@@ -314,7 +382,7 @@ export default function App() {
         // Fallback to Nominatim POI search if all Overpass servers fail
         if (!overpassSuccess) {
           try {
-            const nomRes = await fetch(`${NOMINATIM_SEARCH}?format=json&q=businesses+in+${encodeURIComponent(city)}&limit=50`);
+            const nomRes = await fetch(`${NOMINATIM_SEARCH}?format=json&q=${encodeURIComponent(refinedNiche.searchQuery + ' in ' + city)}&limit=50`);
             const nomData = await nomRes.json();
             osmBusinesses = nomData.map((el: any) => ({
               id: el.place_id.toString(),
@@ -335,11 +403,44 @@ export default function App() {
       }
 
       // 3. Internet Search Agent (Gemini Grounding)
-      const msg3 = addMessage('InternetSearch', `Performing deep web searches for local businesses in ${city}...`, 'thinking');
+      const msg3 = addMessage('InternetSearch', `Performing deep web searches for ${refinedNiche.searchQuery} in ${city}...`, 'thinking');
+      let geminiBusinesses: any[] = [];
       
-      const geminiBusinesses = await searchGemini(city, lat, lng);
-      
-      updateMessageStatus(msg3, `Scraped ${geminiBusinesses.length} results from Google Search via Gemini.`, 'done', `Queries executed: local businesses in ${city}`);
+      try {
+        const searchAi = new GoogleGenAI({ apiKey: effectiveGeminiKey });
+        const searchResponse = await searchAi.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: `Find 15 real, specific local businesses matching this description: "${refinedNiche.searchQuery}" in ${city} near coordinates ${lat}, ${lng} within a ${searchRadius / 1000}km radius. 
+          Return ONLY a valid JSON array of objects. No markdown formatting, no backticks.
+          Format: [{"name": "Business Name", "address": "Full Address", "website": "https://...", "category": "Restaurant/Clinic/etc", "phone": "+1...", "email": "contact@..."}]`,
+          config: {
+            tools: [{ googleSearch: {} }],
+            responseMimeType: "application/json",
+          },
+        });
+
+        const text = searchResponse.text.trim();
+        const data = JSON.parse(text);
+        
+        geminiBusinesses = data.map((b: any) => ({
+          id: Math.random().toString(36).substring(7),
+          name: b.name || 'Unknown',
+          category: b.category || 'Search Result',
+          address: b.address || 'Unknown Address',
+          lat: lat,
+          lng: lng,
+          phone: b.phone || '',
+          website: b.website || '',
+          email: b.email || '',
+          source: 'Google Search via Gemini'
+        }));
+
+        updateMessageStatus(msg3, `Scraped ${geminiBusinesses.length} results from Google Search via Gemini.`, 'done', `Queries executed: ${refinedNiche.searchQuery} in ${city}`);
+
+      } catch (e) {
+        console.error("Gemini Search failed", e);
+        updateMessageStatus(msg3, `Failed to scrape results from Google Search via Gemini.`, 'error', 'LLM parsing failed.');
+      }
 
       // 4. Merge & Deduplicate
       const msg4 = addMessage('MergeDeduplicate', 'Merging datasets and removing duplicates...', 'thinking');
@@ -457,14 +558,14 @@ export default function App() {
 
       if (needsContact.length > 0) {
         try {
-          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+          const contactAi = new GoogleGenAI({ apiKey: effectiveGeminiKey });
           const prompt = `Find the phone number and email address for the following local businesses. Use Google Search to find their public contact info.
           Businesses:
           ${needsContact.map(b => `- ${b.name} at ${b.address}`).join('\n')}
 
           Return ONLY a JSON array: [{"name": "Business Name", "phone": "phone number or empty", "email": "email or empty"}]`;
 
-          const response = await ai.models.generateContent({
+          const contactResponse = await contactAi.models.generateContent({
             model: "gemini-3-flash-preview",
             contents: prompt,
             config: {
@@ -473,7 +574,7 @@ export default function App() {
             },
           });
 
-          const contactData = JSON.parse(response.text.trim());
+          const contactData = JSON.parse(contactResponse.text.trim());
 
           // Merge back
           contactData.forEach((c: any) => {
@@ -511,14 +612,12 @@ export default function App() {
       // 7. Lead Scoring & Report
       const msg7 = addMessage('LeadScoring', 'Using Gemini AI to calculate Tech Need Scores...', 'thinking');
       
-      if (!process.env.GEMINI_API_KEY) {
-        throw new Error("GEMINI_API_KEY is not configured.");
-      }
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const aiInstance = new GoogleGenAI({ apiKey: effectiveGeminiKey });
       
       const prompt = `
         You are an expert lead scorer for a tech agency. Analyze these small businesses and score their "Tech Need" from 0 to 100.
-        A high score (80-100) means they desperately need tech services (website, SEO, digital presence).
+        The user is specifically targeting this niche: "${targetNiche || 'General local businesses'}".
+        A high score (80-100) means they desperately need tech services (website, SEO, digital presence) AND they are a good fit for the target niche.
         
         Scoring Factors:
         - No website -> +40
@@ -544,7 +643,7 @@ export default function App() {
         ]
       `;
 
-      const response = await ai.models.generateContent({
+      const scoringResponse = await aiInstance.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
         config: {
@@ -554,7 +653,7 @@ export default function App() {
 
       let aiScores: any[] = [];
       try {
-        const text = response.text || '[]';
+        const text = scoringResponse.text || '[]';
         const jsonStr = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
         const parsed = JSON.parse(jsonStr);
         if (Array.isArray(parsed)) {
@@ -564,7 +663,7 @@ export default function App() {
         }
         if (!Array.isArray(aiScores)) aiScores = [];
       } catch (e) {
-        console.error("Failed to parse Gemini response", response.text);
+        console.error("Failed to parse Gemini response", scoringResponse.text);
       }
       
       const finalLeads: BusinessLead[] = verifiedBusinesses.map((biz: any) => {
@@ -686,15 +785,28 @@ export default function App() {
           <h1 className="text-xl font-bold text-white tracking-tight">BusinessForge <span className="text-[#00f3ff]">AI</span></h1>
         </div>
         
-        <form onSubmit={handleSearch} className="flex items-center relative max-w-md w-full">
-          <Search className="w-4 h-4 absolute left-3 text-gray-500" />
-          <input 
-            type="text" 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search city (e.g., Brooklyn, NY)"
-            className="w-full bg-black/50 border border-white/10 rounded-full py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:border-[#00f3ff]/50 focus:ring-1 focus:ring-[#00f3ff]/50 transition-all text-white placeholder-gray-600"
-          />
+        <form onSubmit={handleSearch} className="flex items-center gap-2 max-w-2xl w-full">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input 
+              type="text" 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="City (e.g., Brooklyn, NY)"
+              className="w-full bg-black/50 border border-white/10 rounded-full py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:border-[#00f3ff]/50 focus:ring-1 focus:ring-[#00f3ff]/50 transition-all text-white placeholder-gray-600"
+            />
+          </div>
+          <div className="relative flex-1">
+            <Briefcase className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input 
+              type="text" 
+              value={targetNiche}
+              onChange={(e) => setTargetNiche(e.target.value)}
+              placeholder="Niche (e.g., Plumbers, Cafes)"
+              className="w-full bg-black/50 border border-white/10 rounded-full py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:border-[#00f3ff]/50 focus:ring-1 focus:ring-[#00f3ff]/50 transition-all text-white placeholder-gray-600"
+            />
+          </div>
+          <button type="submit" className="hidden">Search</button>
         </form>
 
         <div className="flex items-center gap-4">
@@ -1109,6 +1221,20 @@ export default function App() {
                   <span>10km</span>
                   <span>20km</span>
                 </div>
+              </div>
+
+              <div className="border-t border-white/10 pt-4">
+                <label className="block text-sm font-medium text-gray-300 mb-1">Gemini API Key</label>
+                <p className="text-xs text-gray-500 mb-3">
+                  Required for AI analysis, niche refinement, and deep web searches. If you are running this locally, you can provide your own key here.
+                </p>
+                <input 
+                  type="password" 
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="w-full bg-black/50 border border-white/10 rounded-lg py-2 px-3 text-sm focus:outline-none focus:border-[#00f3ff]/50 focus:ring-1 focus:ring-[#00f3ff]/50 transition-all text-white placeholder-gray-600"
+                />
               </div>
 
               <div className="border-t border-white/10 pt-4">
