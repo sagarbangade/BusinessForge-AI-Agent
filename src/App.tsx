@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap } from 're
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { gsap } from 'gsap';
-import { Search, MapPin, Download, Loader2, Globe, ShieldCheck, BarChart3, Target, Zap, Filter, ChevronUp, ChevronDown, Merge, SearchCode, Database, ArrowRight, CheckCircle2, AlertTriangle, X, Phone, Mail, Settings, Briefcase, BrainCircuit } from 'lucide-react';
+import { Search, MapPin, Download, Loader2, Globe, ShieldCheck, BarChart3, Target, Zap, Filter, ChevronUp, ChevronDown, Merge, SearchCode, Database, ArrowRight, CheckCircle2, AlertTriangle, X, Phone, Mail, Settings, Briefcase, BrainCircuit, Copy, Star, MailOpen, Smartphone, Lock } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 
 // Fix Leaflet default icon issue
@@ -45,6 +45,8 @@ interface BusinessLead {
   socialLinks: string[];
   hasSEO: boolean;
   isBroken: boolean;
+  hasSSL: boolean;
+  isMobileFriendly: boolean;
   techNeedScore: number;
   confidence: number;
   sources: string[];
@@ -106,6 +108,13 @@ export default function App() {
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('geminiKey') || '');
   const [searchRadius, setSearchRadius] = useState<number>(parseInt(localStorage.getItem('searchRadius') || '2000'));
 
+  // CRM State
+  const [savedLeads, setSavedLeads] = useState<BusinessLead[]>(() => JSON.parse(localStorage.getItem('savedLeads') || '[]'));
+  const [showSaved, setShowSaved] = useState(false);
+  const [quickFilters, setQuickFilters] = useState<string[]>([]);
+  const [pitch, setPitch] = useState('');
+  const [isGeneratingPitch, setIsGeneratingPitch] = useState(false);
+
   // Table State
   const [filterText, setFilterText] = useState('');
   const [sortConfig, setSortConfig] = useState<{ key: keyof BusinessLead, direction: 'asc' | 'desc' }>({ key: 'techNeedScore', direction: 'desc' });
@@ -120,6 +129,10 @@ export default function App() {
       chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages]);
+
+  useEffect(() => {
+    localStorage.setItem('savedLeads', JSON.stringify(savedLeads));
+  }, [savedLeads]);
 
   const saveSettings = () => {
     localStorage.setItem('googlePlacesKey', googlePlacesKey);
@@ -495,13 +508,15 @@ export default function App() {
       for (let i = 0; i < finalMerged.length; i += batchSize) {
         const batch = finalMerged.slice(i, i + batchSize);
         const results = await Promise.all(batch.map(async (biz: any) => {
-          let webData = { hasWebsite: !!biz.website, isReachable: false, isBroken: false, hasContactInfo: !!biz.phone, emails: [] as string[], socialLinks: [] as string[], hasSEO: false };
+          let webData = { hasWebsite: !!biz.website, isReachable: false, isBroken: false, hasContactInfo: !!biz.phone, emails: [] as string[], socialLinks: [] as string[], hasSEO: false, hasSSL: true, isMobileFriendly: true };
           
           if (biz.website) {
             try {
               let urlToFetch = biz.website;
               if (!urlToFetch.startsWith('http')) {
                 urlToFetch = 'https://' + urlToFetch;
+              } else if (urlToFetch.startsWith('http://')) {
+                webData.hasSSL = false;
               }
               const proxyUrl = `${CORS_PROXY}${encodeURIComponent(urlToFetch)}`;
               const res = await fetch(proxyUrl);
@@ -516,6 +531,10 @@ export default function App() {
                 const title = doc.querySelector('title')?.textContent;
                 const metaDesc = doc.querySelector('meta[name="description"]')?.getAttribute('content');
                 if (title && metaDesc) webData.hasSEO = true;
+
+                // Mobile Friendly Check
+                const viewport = doc.querySelector('meta[name="viewport"]');
+                if (!viewport) webData.isMobileFriendly = false;
 
                 // Emails
                 const mailtoLinks = Array.from(doc.querySelectorAll('a[href^="mailto:"]')).map(a => a.getAttribute('href')?.replace('mailto:', '').split('?')[0]);
@@ -624,6 +643,8 @@ export default function App() {
         - Broken website -> +30
         - No phone/email -> +15
         - No SEO/meta -> +10
+        - No SSL -> +10
+        - Not Mobile Friendly -> +15
         - No social presence -> +5
         
         Input Data:
@@ -634,6 +655,8 @@ export default function App() {
           isBroken: b.webData.isBroken, 
           hasContact: b.webData.hasContactInfo || !!b.phone || !!b.email,
           hasSEO: b.webData.hasSEO,
+          hasSSL: b.webData.hasSSL,
+          isMobileFriendly: b.webData.isMobileFriendly,
           hasSocial: b.webData.socialLinks.length > 0
         })))}
         
@@ -680,6 +703,8 @@ export default function App() {
           email: biz.webData.emails[0] || biz.email || '',
           socialLinks: biz.webData.socialLinks,
           hasSEO: biz.webData.hasSEO,
+          hasSSL: biz.webData.hasSSL,
+          isMobileFriendly: biz.webData.isMobileFriendly,
           isBroken: biz.webData.isBroken,
           techNeedScore: aiData.techNeedScore,
           confidence: biz.confidence,
@@ -719,12 +744,26 @@ export default function App() {
     setSortConfig({ key, direction });
   };
 
+  const toggleFilter = (f: string) => {
+    setQuickFilters(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f]);
+    setCurrentPage(1);
+  };
+
   const filteredAndSortedLeads = useMemo(() => {
-    let filtered = leads.filter(lead => 
+    const sourceList = showSaved ? savedLeads : leads;
+    
+    let filtered = sourceList.filter(lead => 
       lead.name.toLowerCase().includes(filterText.toLowerCase()) ||
       lead.category.toLowerCase().includes(filterText.toLowerCase()) ||
       lead.address.toLowerCase().includes(filterText.toLowerCase())
     );
+
+    if (quickFilters.includes('No Website')) filtered = filtered.filter(l => !l.website);
+    if (quickFilters.includes('Broken Site')) filtered = filtered.filter(l => l.isBroken);
+    if (quickFilters.includes('Has Email')) filtered = filtered.filter(l => !!l.email);
+    if (quickFilters.includes('Score 80+')) filtered = filtered.filter(l => l.techNeedScore >= 80);
+    if (quickFilters.includes('No SSL')) filtered = filtered.filter(l => !l.hasSSL && l.website && !l.isBroken);
+    if (quickFilters.includes('Not Mobile Friendly')) filtered = filtered.filter(l => !l.isMobileFriendly && l.website && !l.isBroken);
 
     filtered.sort((a, b) => {
       if (a[sortConfig.key] < b[sortConfig.key]) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -733,7 +772,7 @@ export default function App() {
     });
 
     return filtered;
-  }, [leads, filterText, sortConfig]);
+  }, [leads, savedLeads, showSaved, filterText, sortConfig, quickFilters]);
 
   const paginatedLeads = useMemo(() => {
     const startIndex = (currentPage - 1) * rowsPerPage;
@@ -741,6 +780,48 @@ export default function App() {
   }, [filteredAndSortedLeads, currentPage, rowsPerPage]);
 
   const totalPages = Math.ceil(filteredAndSortedLeads.length / rowsPerPage);
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  const generatePitch = async () => {
+    if (!selectedLead) return;
+    setIsGeneratingPitch(true);
+    try {
+      const effectiveGeminiKey = geminiKey || process.env.GEMINI_API_KEY;
+      if (!effectiveGeminiKey) throw new Error("No Gemini API key");
+      const ai = new GoogleGenAI({ apiKey: effectiveGeminiKey });
+      
+      const issues = [];
+      if (!selectedLead.website) issues.push("no website");
+      if (selectedLead.isBroken) issues.push("a broken website");
+      if (!selectedLead.hasSEO) issues.push("missing basic SEO");
+      if (!selectedLead.hasSSL && selectedLead.website && !selectedLead.isBroken) issues.push("an insecure website (no SSL/HTTPS)");
+      if (!selectedLead.isMobileFriendly && selectedLead.website && !selectedLead.isBroken) issues.push("a website that isn't mobile-friendly");
+      
+      const prompt = `Write a short, highly personalized cold email to ${selectedLead.name}. They are a ${selectedLead.category} in ${selectedLead.address}. Their specific tech issues: ${issues.join(', ')}. Offer to fix these specific issues. Keep it under 120 words. Be punchy, professional, and focus on the value of fixing their specific problems. No subject line needed, just the body.`;
+      
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt
+      });
+      setPitch(response.text);
+    } catch (e) {
+      console.error(e);
+      setPitch("Failed to generate pitch. Please check your Gemini API key.");
+    }
+    setIsGeneratingPitch(false);
+  };
+
+  const toggleSaveLead = (lead: BusinessLead, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSavedLeads(prev => {
+      const exists = prev.some(l => l.id === lead.id);
+      if (exists) return prev.filter(l => l.id !== lead.id);
+      return [...prev, lead];
+    });
+  };
 
   const exportCSV = () => {
     if (leads.length === 0) return;
@@ -823,7 +904,6 @@ export default function App() {
             className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
           >
             <Download className="w-4 h-4" />
-            Export CSV
           </button>
         </div>
       </header>
@@ -927,35 +1007,59 @@ export default function App() {
           {/* Data Table Area (Bottom Half) */}
           <div className="h-[60%] bg-[#050508] flex flex-col relative">
             {/* Table Toolbar */}
-            <div className="p-3 border-b border-white/10 flex items-center justify-between bg-white/5">
-              <div className="flex items-center gap-4">
-                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <BarChart3 className="w-4 h-4 text-[#00f3ff]" />
-                  Verified Leads ({filteredAndSortedLeads.length})
-                </h2>
-                <div className="relative">
-                  <Filter className="w-3 h-3 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
-                  <input 
-                    type="text" 
-                    value={filterText}
-                    onChange={(e) => { setFilterText(e.target.value); setCurrentPage(1); }}
-                    placeholder="Filter results..."
-                    className="bg-black/50 border border-white/10 rounded px-8 py-1 text-xs focus:outline-none focus:border-[#00f3ff]/50 text-white w-64"
-                  />
+            <div className="p-3 border-b border-white/10 flex flex-col gap-3 bg-white/5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4 text-[#00f3ff]" />
+                    {showSaved ? 'Saved Leads' : 'Verified Leads'} ({filteredAndSortedLeads.length})
+                  </h2>
+                  <div className="relative">
+                    <Filter className="w-3 h-3 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+                    <input 
+                      type="text" 
+                      value={filterText}
+                      onChange={(e) => { setFilterText(e.target.value); setCurrentPage(1); }}
+                      placeholder="Filter results..."
+                      className="bg-black/50 border border-white/10 rounded px-8 py-1 text-xs focus:outline-none focus:border-[#00f3ff]/50 text-white w-64"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => { setShowSaved(!showSaved); setCurrentPage(1); }}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-medium transition-colors ${showSaved ? 'bg-[#ffb300]/20 text-[#ffb300] border border-[#ffb300]/50' : 'bg-black/50 text-gray-400 border border-white/10 hover:bg-white/10'}`}
+                  >
+                    <Star className={`w-3.5 h-3.5 ${showSaved ? 'fill-current' : ''}`} />
+                    {showSaved ? 'Show All' : 'Saved Leads'}
+                  </button>
+                  <div className="flex items-center gap-2 text-xs text-gray-400">
+                    <span>Rows per page:</span>
+                    <select 
+                      value={rowsPerPage} 
+                      onChange={(e) => { setRowsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+                      className="bg-black/50 border border-white/10 rounded px-2 py-1 focus:outline-none focus:border-[#00f3ff]/50 text-white"
+                    >
+                      <option value={10}>10</option>
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                  </div>
                 </div>
               </div>
-              <div className="flex items-center gap-2 text-xs text-gray-400">
-                <span>Rows per page:</span>
-                <select 
-                  value={rowsPerPage} 
-                  onChange={(e) => { setRowsPerPage(Number(e.target.value)); setCurrentPage(1); }}
-                  className="bg-black/50 border border-white/10 rounded px-2 py-1 focus:outline-none text-white"
-                >
-                  <option value={10}>10</option>
-                  <option value={25}>25</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                </select>
+              
+              {/* Quick Filters */}
+              <div className="flex flex-wrap gap-2">
+                {['No Website', 'Broken Site', 'Has Email', 'Score 80+', 'No SSL', 'Not Mobile Friendly'].map(f => (
+                  <button
+                    key={f}
+                    onClick={() => toggleFilter(f)}
+                    className={`px-2 py-1 rounded text-[10px] uppercase tracking-wider font-medium border transition-colors ${quickFilters.includes(f) ? 'bg-[#00f3ff]/20 text-[#00f3ff] border-[#00f3ff]/50' : 'bg-black/30 text-gray-400 border-white/10 hover:bg-white/10'}`}
+                  >
+                    {f}
+                  </button>
+                ))}
               </div>
             </div>
             
@@ -980,6 +1084,7 @@ export default function App() {
                     <th className="px-4 py-3 cursor-pointer hover:bg-white/5 transition-colors" onClick={() => handleSort('confidence')}>
                       <div className="flex items-center gap-1">Confidence <SortIcon columnKey="confidence" /></div>
                     </th>
+                    <th className="px-4 py-3 w-10"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
@@ -1016,10 +1121,12 @@ export default function App() {
                             
                             <div className="text-xs mt-1">
                               {lead.website ? (
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <a href={lead.website} target="_blank" rel="noreferrer" className="text-[#00f3ff] hover:underline truncate max-w-[150px]">Website</a>
                                   {lead.isBroken && <span className="text-[10px] bg-[#ff003c]/20 text-[#ff003c] px-1.5 rounded border border-[#ff003c]/30">Broken</span>}
                                   {!lead.hasSEO && <span className="text-[10px] bg-[#ffb300]/20 text-[#ffb300] px-1.5 rounded border border-[#ffb300]/30">No SEO</span>}
+                                  {!lead.hasSSL && <span className="text-[10px] bg-[#ff003c]/20 text-[#ff003c] px-1.5 rounded border border-[#ff003c]/30">No SSL</span>}
+                                  {!lead.isMobileFriendly && <span className="text-[10px] bg-[#ffb300]/20 text-[#ffb300] px-1.5 rounded border border-[#ffb300]/30">Not Mobile</span>}
                                 </div>
                               ) : (
                                 <span className="text-[#ff003c] italic">No website</span>
@@ -1047,6 +1154,15 @@ export default function App() {
                           <div className="text-[10px] text-gray-500 mt-1">
                             {lead.sources.length} source(s)
                           </div>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={(e) => toggleSaveLead(lead, e)}
+                            className={`p-1.5 rounded transition-colors ${savedLeads.some(l => l.id === lead.id) ? 'text-[#ffb300] bg-[#ffb300]/10 hover:bg-[#ffb300]/20' : 'text-gray-500 hover:text-white hover:bg-white/10'}`}
+                            title={savedLeads.some(l => l.id === lead.id) ? "Remove from saved" : "Save lead"}
+                          >
+                            <Star className={`w-4 h-4 ${savedLeads.some(l => l.id === lead.id) ? 'fill-current' : ''}`} />
+                          </button>
                         </td>
                       </tr>
                     ))
@@ -1120,13 +1236,27 @@ export default function App() {
                     <MapPin className="w-4 h-4 text-gray-500 mt-0.5 shrink-0" />
                     <span className="text-gray-300">{selectedLead.address}</span>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 group">
                     <Phone className="w-4 h-4 text-gray-500 shrink-0" />
-                    <span className="text-gray-300">{selectedLead.phone || 'No phone available'}</span>
+                    <span className="text-gray-300 flex-1">{selectedLead.phone || 'No phone available'}</span>
+                    {selectedLead.phone && (
+                      <button onClick={() => copyToClipboard(selectedLead.phone!)} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-white/10 rounded transition-all text-gray-400 hover:text-white" title="Copy Phone">
+                        <Copy className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 group">
                     <Mail className="w-4 h-4 text-gray-500 shrink-0" />
-                    <span className="text-gray-300">{selectedLead.email || 'No email available'}</span>
+                    {selectedLead.email ? (
+                      <a href={`mailto:${selectedLead.email}`} className="text-gray-300 hover:text-[#00f3ff] transition-colors flex-1">{selectedLead.email}</a>
+                    ) : (
+                      <span className="text-gray-300 flex-1">No email available</span>
+                    )}
+                    {selectedLead.email && (
+                      <button onClick={() => copyToClipboard(selectedLead.email!)} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-white/10 rounded transition-all text-gray-400 hover:text-white" title="Copy Email">
+                        <Copy className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <Globe className="w-4 h-4 text-gray-500 shrink-0" />
@@ -1151,9 +1281,11 @@ export default function App() {
               <div className="space-y-3">
                 <h3 className="text-sm font-semibold text-[#00ff66] uppercase tracking-wider border-b border-white/10 pb-2">Web Presence</h3>
                 <div className="flex flex-wrap gap-2">
-                  {selectedLead.website && !selectedLead.isBroken && <span className="px-2 py-1 bg-[#00ff66]/10 text-[#00ff66] border border-[#00ff66]/30 rounded text-xs">Website Active</span>}
-                  {selectedLead.isBroken && <span className="px-2 py-1 bg-[#ff003c]/10 text-[#ff003c] border border-[#ff003c]/30 rounded text-xs">Website Broken</span>}
-                  {selectedLead.hasSEO ? <span className="px-2 py-1 bg-[#00ff66]/10 text-[#00ff66] border border-[#00ff66]/30 rounded text-xs">SEO Found</span> : <span className="px-2 py-1 bg-[#ffb300]/10 text-[#ffb300] border border-[#ffb300]/30 rounded text-xs">Missing SEO</span>}
+                  {selectedLead.website && !selectedLead.isBroken && <span className="px-2 py-1 bg-[#00ff66]/10 text-[#00ff66] border border-[#00ff66]/30 rounded text-xs flex items-center gap-1"><Globe className="w-3 h-3" /> Website Active</span>}
+                  {selectedLead.isBroken && <span className="px-2 py-1 bg-[#ff003c]/10 text-[#ff003c] border border-[#ff003c]/30 rounded text-xs flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Website Broken</span>}
+                  {selectedLead.hasSEO ? <span className="px-2 py-1 bg-[#00ff66]/10 text-[#00ff66] border border-[#00ff66]/30 rounded text-xs flex items-center gap-1"><SearchCode className="w-3 h-3" /> SEO Found</span> : <span className="px-2 py-1 bg-[#ffb300]/10 text-[#ffb300] border border-[#ffb300]/30 rounded text-xs flex items-center gap-1"><SearchCode className="w-3 h-3" /> Missing SEO</span>}
+                  {selectedLead.hasSSL ? <span className="px-2 py-1 bg-[#00ff66]/10 text-[#00ff66] border border-[#00ff66]/30 rounded text-xs flex items-center gap-1"><Lock className="w-3 h-3" /> SSL Secure</span> : <span className="px-2 py-1 bg-[#ff003c]/10 text-[#ff003c] border border-[#ff003c]/30 rounded text-xs flex items-center gap-1"><Lock className="w-3 h-3" /> No SSL</span>}
+                  {selectedLead.isMobileFriendly ? <span className="px-2 py-1 bg-[#00ff66]/10 text-[#00ff66] border border-[#00ff66]/30 rounded text-xs flex items-center gap-1"><Smartphone className="w-3 h-3" /> Mobile Friendly</span> : <span className="px-2 py-1 bg-[#ffb300]/10 text-[#ffb300] border border-[#ffb300]/30 rounded text-xs flex items-center gap-1"><Smartphone className="w-3 h-3" /> Not Mobile Friendly</span>}
                 </div>
                 {selectedLead.socialLinks.length > 0 && (
                   <div className="mt-3">
@@ -1163,6 +1295,37 @@ export default function App() {
                         <a key={i} href={link} target="_blank" rel="noreferrer" className="text-xs text-[#00f3ff] hover:underline truncate">{link}</a>
                       ))}
                     </div>
+                  </div>
+                )}
+              </div>
+
+              {/* AI Cold Email Generator */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                  <h3 className="text-sm font-semibold text-[#b026ff] uppercase tracking-wider flex items-center gap-2">
+                    <MailOpen className="w-4 h-4" /> AI Cold Email Pitch
+                  </h3>
+                  <button 
+                    onClick={generatePitch}
+                    disabled={isGeneratingPitch}
+                    className="px-3 py-1 bg-[#b026ff]/20 text-[#b026ff] border border-[#b026ff]/50 rounded text-xs hover:bg-[#b026ff]/30 transition-colors disabled:opacity-50 flex items-center gap-1"
+                  >
+                    {isGeneratingPitch ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                    Generate Pitch
+                  </button>
+                </div>
+                {pitch && (
+                  <div className="relative group">
+                    <div className="text-sm text-gray-300 leading-relaxed bg-white/5 p-4 rounded-lg border border-[#b026ff]/30 whitespace-pre-wrap">
+                      {pitch}
+                    </div>
+                    <button 
+                      onClick={() => copyToClipboard(pitch)}
+                      className="absolute top-2 right-2 p-1.5 bg-black/50 border border-white/10 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/10 text-gray-400 hover:text-white"
+                      title="Copy Pitch"
+                    >
+                      <Copy className="w-3 h-3" />
+                    </button>
                   </div>
                 )}
               </div>
