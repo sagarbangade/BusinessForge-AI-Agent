@@ -104,6 +104,7 @@ export default function App() {
   
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [showMobileLogs, setShowMobileLogs] = useState(false);
   const [googlePlacesKey, setGooglePlacesKey] = useState(localStorage.getItem('googlePlacesKey') || '');
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('geminiKey') || '');
   const [searchRadius, setSearchRadius] = useState<number>(parseInt(localStorage.getItem('searchRadius') || '2000'));
@@ -114,6 +115,8 @@ export default function App() {
   const [quickFilters, setQuickFilters] = useState<string[]>([]);
   const [pitch, setPitch] = useState('');
   const [isGeneratingPitch, setIsGeneratingPitch] = useState(false);
+  const [whatsappMsg, setWhatsappMsg] = useState('');
+  const [isGeneratingWhatsapp, setIsGeneratingWhatsapp] = useState(false);
 
   // Table State
   const [filterText, setFilterText] = useState('');
@@ -133,6 +136,11 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('savedLeads', JSON.stringify(savedLeads));
   }, [savedLeads]);
+
+  useEffect(() => {
+    setPitch('');
+    setWhatsappMsg('');
+  }, [selectedLead]);
 
   const saveSettings = () => {
     localStorage.setItem('googlePlacesKey', googlePlacesKey);
@@ -814,6 +822,35 @@ export default function App() {
     setIsGeneratingPitch(false);
   };
 
+  const generateWhatsapp = async () => {
+    if (!selectedLead || !selectedLead.phone) return;
+    setIsGeneratingWhatsapp(true);
+    try {
+      const effectiveGeminiKey = geminiKey || process.env.GEMINI_API_KEY;
+      if (!effectiveGeminiKey) throw new Error("No Gemini API key");
+      const ai = new GoogleGenAI({ apiKey: effectiveGeminiKey });
+      
+      const issues = [];
+      if (!selectedLead.website) issues.push("no website");
+      if (selectedLead.isBroken) issues.push("a broken website");
+      if (!selectedLead.hasSEO) issues.push("missing basic SEO");
+      if (!selectedLead.hasSSL && selectedLead.website && !selectedLead.isBroken) issues.push("an insecure website (no SSL/HTTPS)");
+      if (!selectedLead.isMobileFriendly && selectedLead.website && !selectedLead.isBroken) issues.push("a website that isn't mobile-friendly");
+      
+      const prompt = `Write a short, friendly WhatsApp message to the business owner or operator of ${selectedLead.name}. Introduce yourself: "Hi there, I'm Sagar from India and I am really good at tech. I am approaching you to ask if you want any help from me in tech related stuffs like I can make mobile apps and websites". Tailor the rest of the message based on their specific tech issues: ${issues.length > 0 ? issues.join(', ') : "general online presence"}. Keep it very casual, brief, and friendly. No subject line, just the message.`;
+      
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt
+      });
+      setWhatsappMsg(response.text);
+    } catch (e) {
+      console.error(e);
+      setWhatsappMsg("Failed to generate WhatsApp message. Please check your Gemini API key.");
+    }
+    setIsGeneratingWhatsapp(false);
+  };
+
   const toggleSaveLead = (lead: BusinessLead, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setSavedLeads(prev => {
@@ -855,42 +892,62 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#050508] text-gray-300 font-sans selection:bg-[#00f3ff]/30 flex flex-col overflow-hidden">
+    <div className="h-[100dvh] bg-[#050508] text-gray-300 font-sans selection:bg-[#00f3ff]/30 flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="h-16 border-b border-white/10 bg-white/5 backdrop-blur-md flex items-center justify-between px-6 z-20 relative">
-        <div className="flex items-center gap-3">
-          <div className="relative flex items-center justify-center w-8 h-8 rounded bg-[#00f3ff]/10 border border-[#00f3ff]/30">
-            <Target className="w-5 h-5 text-[#00f3ff]" />
-            <div className="absolute inset-0 bg-[#00f3ff] blur-md opacity-20"></div>
+      <header className="h-auto md:h-16 py-3 md:py-0 border-b border-white/10 bg-white/5 backdrop-blur-md flex flex-col md:flex-row items-center justify-between px-4 md:px-6 z-20 relative gap-3 md:gap-4 shrink-0">
+        <div className="flex items-center justify-between w-full md:w-auto">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="relative flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded bg-[#00f3ff]/10 border border-[#00f3ff]/30 shrink-0">
+              <Target className="w-4 h-4 sm:w-5 sm:h-5 text-[#00f3ff]" />
+              <div className="absolute inset-0 bg-[#00f3ff] blur-md opacity-20"></div>
+            </div>
+            <h1 className="text-lg sm:text-xl font-bold text-white tracking-tight">BusinessForge <span className="text-[#00f3ff]">AI</span></h1>
           </div>
-          <h1 className="text-xl font-bold text-white tracking-tight">BusinessForge <span className="text-[#00f3ff]">AI</span></h1>
+          
+          {/* Mobile Actions */}
+          <div className="flex md:hidden items-center gap-2">
+            <button 
+              onClick={() => setShowMobileLogs(!showMobileLogs)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors flex items-center gap-1.5 ${showMobileLogs ? 'bg-[#00f3ff]/20 text-[#00f3ff] border-[#00f3ff]/50' : 'bg-white/5 text-gray-400 border-white/10 hover:bg-white/10'}`}
+            >
+              <Zap className="w-3 h-3" />
+              Logs
+            </button>
+            <button 
+              onClick={() => setIsSettingsOpen(true)}
+              className="flex items-center justify-center w-8 h-8 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all text-gray-400 hover:text-white shrink-0"
+              title="Settings"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+          </div>
         </div>
         
-        <form onSubmit={handleSearch} className="flex items-center gap-2 max-w-2xl w-full">
-          <div className="relative flex-1">
+        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row items-center gap-2 w-full md:max-w-2xl">
+          <div className="relative flex-1 w-full">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
             <input 
               type="text" 
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="City (e.g., Brooklyn, NY)"
-              className="w-full bg-black/50 border border-white/10 rounded-full py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:border-[#00f3ff]/50 focus:ring-1 focus:ring-[#00f3ff]/50 transition-all text-white placeholder-gray-600"
+              className="w-full bg-black/50 border border-white/10 rounded-full py-2 sm:py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:border-[#00f3ff]/50 focus:ring-1 focus:ring-[#00f3ff]/50 transition-all text-white placeholder-gray-600"
             />
           </div>
-          <div className="relative flex-1">
+          <div className="relative flex-1 w-full">
             <Briefcase className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
             <input 
               type="text" 
               value={targetNiche}
               onChange={(e) => setTargetNiche(e.target.value)}
               placeholder="Niche (e.g., Plumbers, Cafes)"
-              className="w-full bg-black/50 border border-white/10 rounded-full py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:border-[#00f3ff]/50 focus:ring-1 focus:ring-[#00f3ff]/50 transition-all text-white placeholder-gray-600"
+              className="w-full bg-black/50 border border-white/10 rounded-full py-2 sm:py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:border-[#00f3ff]/50 focus:ring-1 focus:ring-[#00f3ff]/50 transition-all text-white placeholder-gray-600"
             />
           </div>
           <button type="submit" className="hidden">Search</button>
         </form>
 
-        <div className="flex items-center gap-4">
+        <div className="hidden md:flex items-center gap-3 shrink-0">
           <button 
             onClick={() => setIsSettingsOpen(true)}
             className="flex items-center justify-center w-8 h-8 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all text-gray-400 hover:text-white"
@@ -908,14 +965,17 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden relative">
         {/* Left Sidebar: AI Agents */}
-        <aside className="w-80 border-r border-white/10 bg-black/40 backdrop-blur-xl flex flex-col relative z-10">
-          <div className="p-4 border-b border-white/10">
+        <aside className={`${showMobileLogs ? 'flex absolute inset-0 z-30 bg-[#0a0a0f]' : 'hidden'} md:flex md:static w-full md:w-80 border-r border-white/10 bg-black/40 backdrop-blur-xl flex-col relative z-10`}>
+          <div className="p-4 border-b border-white/10 flex justify-between items-center bg-[#0a0a0f] md:bg-transparent">
             <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-2">
               <Zap className="w-3 h-3 text-[#ffb300]" />
               Agent Swarm Activity
             </h2>
+            <button onClick={() => setShowMobileLogs(false)} className="md:hidden p-1 text-gray-400 hover:text-white">
+               <X className="w-4 h-4" />
+            </button>
           </div>
           
           <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar" ref={chatContainerRef}>
@@ -1200,20 +1260,20 @@ export default function App() {
 
       {/* Lead Details Slide-over */}
       {selectedLead && (
-        <div className="fixed inset-0 z-[500] flex justify-end bg-black/50 backdrop-blur-sm" onClick={() => setSelectedLead(null)}>
+        <div className="fixed inset-0 z-[500] flex justify-end bg-black/50 backdrop-blur-sm p-0 md:p-4" onClick={() => setSelectedLead(null)}>
           <div 
-            className="w-full max-w-md h-full bg-[#0a0a0f] border-l border-white/10 shadow-2xl flex flex-col transform transition-transform duration-300"
+            className="w-full max-w-md h-[100dvh] md:h-full bg-[#0a0a0f] md:rounded-2xl border-l md:border border-white/10 shadow-2xl flex flex-col transform transition-transform duration-300 overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
             {/* Header */}
-            <div className="p-6 border-b border-white/10 flex items-center justify-between bg-white/5">
-              <h2 className="text-xl font-bold text-white pr-4">{selectedLead.name}</h2>
+            <div className="p-4 md:p-6 border-b border-white/10 flex items-center justify-between bg-white/5 shrink-0">
+              <h2 className="text-xl font-bold text-white pr-4 truncate">{selectedLead.name}</h2>
               <button onClick={() => setSelectedLead(null)} className="p-2 hover:bg-white/10 rounded-full transition-colors shrink-0">
                 <X className="w-5 h-5 text-gray-400" />
               </button>
             </div>
             {/* Body */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 custom-scrollbar pb-32">
               {/* Score & Confidence */}
               <div className="flex gap-4">
                 <div className="flex-1 bg-white/5 border border-white/10 rounded-lg p-4 text-center">
@@ -1329,6 +1389,49 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              {/* AI WhatsApp Generator */}
+              {selectedLead.phone && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                  <h3 className="text-sm font-semibold text-[#25D366] uppercase tracking-wider flex items-center gap-2">
+                    <Phone className="w-4 h-4" /> AI WhatsApp Msg
+                  </h3>
+                  <button 
+                    onClick={generateWhatsapp}
+                    disabled={isGeneratingWhatsapp}
+                    className="px-3 py-1 bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/50 rounded text-xs hover:bg-[#25D366]/30 transition-colors disabled:opacity-50 flex items-center gap-1"
+                  >
+                    {isGeneratingWhatsapp ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                    Generate Msg
+                  </button>
+                </div>
+                {whatsappMsg && (
+                  <div className="relative group flex flex-col gap-2">
+                    <div className="text-sm text-gray-300 leading-relaxed bg-white/5 p-4 rounded-lg border border-[#25D366]/30 whitespace-pre-wrap">
+                      {whatsappMsg}
+                    </div>
+                    <div className="flex justify-end gap-2 mt-1">
+                      <button 
+                        onClick={() => copyToClipboard(whatsappMsg)}
+                        className="px-3 py-1.5 bg-black/50 border border-white/10 rounded text-xs hover:bg-white/10 text-gray-300 hover:text-white flex items-center gap-1.5"
+                      >
+                        <Copy className="w-3 h-3" />
+                        Copy
+                      </button>
+                      <a 
+                        href={`https://wa.me/${selectedLead.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(whatsappMsg)}`}
+                        target="_blank" rel="noreferrer"
+                        className="px-3 py-1.5 bg-[#25D366]/20 border border-[#25D366]/50 rounded text-xs text-[#25D366] hover:bg-[#25D366]/40 flex items-center gap-1.5 font-medium"
+                      >
+                        <Phone className="w-3 h-3" />
+                        Send via WhatsApp
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </div>
+              )}
 
               {/* Sources */}
               <div className="space-y-3">
